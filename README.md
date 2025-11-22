@@ -1,10 +1,11 @@
 # Server and Client Local Socket Programming
 ## Group Members
-1. Kush Bajaria (bajariakush@csu.fullerton.edu)
+1. Amir Valiulla (amir.valiulla@csu.fullerton.edu)
 2. Joshua Yee (joshuayee@csu.fullerton.edu)
 3. Randolph Brummett (rbrummett@csu.fullerton.edu)
 4. Ric Escalante (rescalante12@csu.fullerton.edu)
-5. Amir Valiulla (amir.valiulla@csu.fullerton.edu)
+5. Kush Bajaria (bajariakush@csu.fullerton.edu)
+   
 
 ## Programming Language
 - Python
