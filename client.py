@@ -3,20 +3,34 @@ import os
 
 # FTP-like client with TWO connections:
 # 1. Control Connection (port 11123) - for commands and responses
-# 2. Data Connection (port 11124) - for file/data transfers
+# 2. Data Connection (dynamic port) - for file/data transfers
 
 CONTROL_PORT = 11123
-DATA_PORT = 11124
 SERVER_IP = '127.0.0.1'
 
-def create_data_connection():
+def create_data_connection(port):
     """
-    Create a data connection to the server.
+    Create a data connection to the server on the specified port.
     This is opened on-demand for each data transfer.
+    The port is dynamically assigned by the server.
     """
     data_socket = socket.socket()
-    data_socket.connect((SERVER_IP, DATA_PORT))
+    data_socket.connect((SERVER_IP, port))
     return data_socket
+
+def parse_data_port(response):
+    """
+    Parse the data port number from server's 150 response.
+    Example: "150 Opening data connection on port 54321"
+    """
+    try:
+        # Split response and find "port" keyword
+        parts = response.split()
+        port_index = parts.index("port") + 1
+        return int(parts[port_index])
+    except (ValueError, IndexError):
+        print("Error: Could not parse data port from server response")
+        return None
 
 
 def handle_ls(ctrl_socket):
@@ -32,8 +46,13 @@ def handle_ls(ctrl_socket):
     print(f"Server: {response}")
 
     if response.startswith("150"):
+        # Parse the data port from server response
+        data_port = parse_data_port(response)
+        if data_port is None:
+            return
+
         # Server is opening data connection, connect to it
-        data_socket = create_data_connection()
+        data_socket = create_data_connection(data_port)
 
         # Receive directory listing on data connection
         file_list = data_socket.recv(4096).decode()
@@ -61,8 +80,13 @@ def handle_get(ctrl_socket, filename):
     print(f"Server: {response}")
 
     if response.startswith("150"):
+        # Parse the data port from server response
+        data_port = parse_data_port(response)
+        if data_port is None:
+            return
+
         # Server is opening data connection, connect to it
-        data_socket = create_data_connection()
+        data_socket = create_data_connection(data_port)
 
         # Receive file on data connection
         with open(filename, 'wb') as f:
@@ -102,8 +126,13 @@ def handle_put(ctrl_socket, filename):
     print(f"Server: {response}")
 
     if response.startswith("150"):
+        # Parse the data port from server response
+        data_port = parse_data_port(response)
+        if data_port is None:
+            return
+
         # Server is ready, create data connection
-        data_socket = create_data_connection()
+        data_socket = create_data_connection(data_port)
 
         # Send file on data connection
         with open(filename, 'rb') as f:

@@ -1,3 +1,0 @@
-This is a test file for FTP two-connection architecture.
-You can use this to test GET and PUT commands.
-Hello from the FTP server!

@@ -4,27 +4,37 @@ import threading
 
 # FTP-like server with TWO connections:
 # 1. Control Connection (port 11123) - for commands
-# 2. Data Connection (port 11124) - for file/data transfers
+# 2. Data Connection (dynamic port) - for file/data transfers
 
 CONTROL_PORT = 11123
-DATA_PORT = 11124
+# Thread lock for synchronized logging
+log_lock = threading.Lock()
 
-def handle_data_connection(client_ctrl, operation, filename=None):
+def handle_data_connection(client_ctrl, ctrl_addr, operation, filename=None):
     """
     Handle data connection for file transfers and directory listings.
     This creates a separate connection for data transfer.
+    Each client gets a dynamically assigned port to avoid conflicts.
     """
-    # Create data socket
+    # Create data socket with dynamic port allocation
     data_socket = socket.socket()
-    data_socket.bind(('', DATA_PORT))
+    data_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow port reuse
+    data_socket.bind(('', 0))  # Port 0 = let OS assign available port
     data_socket.listen(1)
 
-    # Tell client we're ready for data connection
-    client_ctrl.send(b"150 Opening data connection\n")
+    # Get the actual port assigned by OS
+    data_port = data_socket.getsockname()[1]
+
+    with log_lock:
+        print(f"[{ctrl_addr}] Opening data connection on port {data_port}")
+
+    # Tell client we're ready for data connection (include port number)
+    client_ctrl.send(f"150 Opening data connection on port {data_port}\n".encode())
 
     # Accept data connection from client
     data_conn, data_addr = data_socket.accept()
-    print(f"Data connection established from {data_addr}")
+    with log_lock:
+        print(f"[{ctrl_addr}] Data connection established from {data_addr}")
 
     try:
         if operation == "ls":
@@ -42,7 +52,8 @@ def handle_data_connection(client_ctrl, operation, filename=None):
                         if not chunk:
                             break
                         data_conn.sendall(chunk)
-                print(f"File '{filename}' sent successfully")
+                with log_lock:
+                    print(f"[{ctrl_addr}] File '{filename}' sent successfully")
             else:
                 # This shouldn't happen as we check before, but just in case
                 data_conn.send(b"ERROR: File not found")
@@ -55,13 +66,15 @@ def handle_data_connection(client_ctrl, operation, filename=None):
                     if not chunk:
                         break
                     f.write(chunk)
-            print(f"File '{filename}' received successfully")
+            with log_lock:
+                print(f"[{ctrl_addr}] File '{filename}' received successfully")
 
     finally:
         # Always close data connection after transfer
         data_conn.close()
         data_socket.close()
-        print("Data connection closed")
+        with log_lock:
+            print(f"[{ctrl_addr}] Data connection closed")
 
         # Send completion message on control connection
         client_ctrl.send(b"226 Transfer complete\n")
@@ -71,8 +84,10 @@ def handle_client(ctrl_conn, ctrl_addr):
     """
     Handle control connection with client.
     Commands are sent/received here, data transfers use separate connection.
+    Each client thread handles both control and data connections independently.
     """
-    print(f"Control connection established from {ctrl_addr}")
+    with log_lock:
+        print(f"[{ctrl_addr}] Control connection established")
     ctrl_conn.send(b"220 Welcome to FTP Server\n")
 
     while True:
@@ -83,11 +98,12 @@ def handle_client(ctrl_conn, ctrl_addr):
             if not data:
                 break
 
-            print(f"Received command: {data}")
+            with log_lock:
+                print(f"[{ctrl_addr}] Received command: {data}")
 
             if data.lower() == "ls":
                 # Use data connection for directory listing
-                handle_data_connection(ctrl_conn, "ls")
+                handle_data_connection(ctrl_conn, ctrl_addr, "ls")
 
             elif data.lower().startswith('get'):
                 parts = data.split()
@@ -95,7 +111,7 @@ def handle_client(ctrl_conn, ctrl_addr):
                     filename = parts[1]
                     if os.path.exists(filename):
                         # Use data connection for file transfer
-                        handle_data_connection(ctrl_conn, "get", filename)
+                        handle_data_connection(ctrl_conn, ctrl_addr, "get", filename)
                     else:
                         ctrl_conn.send(b"550 File not found\n")
                 else:
@@ -106,7 +122,7 @@ def handle_client(ctrl_conn, ctrl_addr):
                 if len(parts) == 2:
                     filename = parts[1]
                     # Use data connection for file upload
-                    handle_data_connection(ctrl_conn, "put", filename)
+                    handle_data_connection(ctrl_conn, ctrl_addr, "put", filename)
                 else:
                     ctrl_conn.send(b"501 Syntax error: PUT <filename>\n")
 
@@ -118,19 +134,22 @@ def handle_client(ctrl_conn, ctrl_addr):
                 ctrl_conn.send(b"500 Unknown command\n")
 
         except Exception as e:
-            print(f"Error: {e}")
+            with log_lock:
+                print(f"[{ctrl_addr}] Error: {e}")
             ctrl_conn.send(f"500 Error: {str(e)}\n".encode())
             break
 
     # Close control connection
     ctrl_conn.close()
-    print(f"Control connection closed for {ctrl_addr}")
+    with log_lock:
+        print(f"[{ctrl_addr}] Control connection closed")
 
 
 def main():
     """
     Main server function.
-    Creates control connection socket and handles multiple clients.
+    Creates control connection socket and handles multiple clients concurrently.
+    Each client gets its own thread with independent control and data connections.
     """
     # Create control connection socket
     ctrl_socket = socket.socket()
@@ -138,11 +157,12 @@ def main():
     ctrl_socket.bind(('', CONTROL_PORT))
     ctrl_socket.listen(5)
 
-    print("="*50)
-    print("FTP Server with Two-Connection Architecture")
-    print("="*50)
+    print("="*60)
+    print("FTP Server with Multi-Threaded Two-Connection Architecture")
+    print("="*60)
     print(f"Control connection listening on port {CONTROL_PORT}")
-    print(f"Data connection will use port {DATA_PORT}")
+    print(f"Data connections use dynamically assigned ports")
+    print(f"Ready to handle multiple concurrent clients")
     print("Waiting for clients...\n")
 
     try:
@@ -150,15 +170,23 @@ def main():
             # Accept control connection
             ctrl_conn, ctrl_addr = ctrl_socket.accept()
 
-            # Handle each client in a separate thread (optional, for multiple clients)
-            client_thread = threading.Thread(target=handle_client, args=(ctrl_conn, ctrl_addr))
+            # Handle each client in a separate daemon thread
+            # Daemon threads automatically terminate when main program exits
+            client_thread = threading.Thread(
+                target=handle_client,
+                args=(ctrl_conn, ctrl_addr),
+                daemon=True  # Ensures clean shutdown
+            )
             client_thread.start()
 
+            with log_lock:
+                print(f"[MAIN] New client thread started for {ctrl_addr}")
+
     except KeyboardInterrupt:
-        print("\nServer shutting down...")
+        print("\n[MAIN] Server shutting down...")
     finally:
         ctrl_socket.close()
-        print("Server closed.")
+        print("[MAIN] Server closed.")
 
 
 if __name__ == "__main__":
